@@ -1,5 +1,14 @@
 Abaixo, seguem exemplos de uso das métricas principais (acurácia já usávamos).
 
+Precisão, Recall e F1-score:
+Precisão, recall e F1-score são métricas comumente usadas para avaliar modelos de classificação.
+
+
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+# Exemplo de predições e rótulos verdadeiros
+y_true = [0, 1, 1, 0, 1]
+y_pred = [0, 1, 0, 0, 1]
 
 # Calcular precisão
 precision = precision_score(y_true, y_pred)
@@ -14,8 +23,11 @@ f1 = f1_score(y_true, y_pred)
 print("F1-score:", f1)
 AUC-ROC (Área sob a curva ROC):
 A AUC-ROC é uma métrica que avalia o desempenho de um classificador binário em vários limiares de discriminação.
-python
-Copy code
+
+
+
+
+
 from sklearn.metrics import roc_auc_score
 
 # Exemplo de pontuações de probabilidade previstas e rótulos verdadeiros
