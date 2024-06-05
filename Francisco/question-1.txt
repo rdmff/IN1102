@@ -1,0 +1,611 @@
+!nvidia-smi
+
+# Dataset sent_aac
+!gdown https://drive.google.com/uc?id=1DSGUQ-2ePO2HR7-ZwgY6VrR-TRn0ZGk_
+!unzip multiple-features.zip
+
+import numpy as np
+
+# Função para carregar os dados de um arquivo de texto
+def load_data(filename):
+    with open(filename, 'r') as file:
+        data = np.loadtxt(file)
+    return data
+
+# Carregar os datasets mfeat-fou, mfeat-fac e mfeat-zer
+mfeat_fou_data = load_data('multiple-features/mfeat-fou')
+mfeat_fac_data = load_data('multiple-features/mfeat-fac')
+mfeat_zer_data = load_data('multiple-features/mfeat-zer')
+
+#print(mfeat_fou_data)
+#print(mfeat_fac_data)
+#print(mfeat_zer_data)
+
+# Verificar as dimensões dos datasets carregados
+print("Dimensões do dataset mfeat-fou:", mfeat_fou_data.shape)
+print("Dimensões do dataset mfeat-fac:", mfeat_fac_data.shape)
+print("Dimensões do dataset mfeat-zer:", mfeat_zer_data.shape)
+
+# Selecionar as primeiras 100 linhas de cada conjunto de dados
+data1 = mfeat_fou_data
+data2 = mfeat_fac_data
+data3 = mfeat_zer_data
+epsilon=1e-6
+
+import numpy as np
+
+min_value1 = np.min(data1)
+max_value1 = np.max(data1)
+mean_value1 = np.median(data1)
+
+# Imprimir os resultados
+print("Valor mínimo para mfeat_fou_data:", min_value1)
+print("Valor máximo para mfeat_fou_data:", max_value1)
+print("Valor da mediana para mfeat_fou_data:", mean_value1)
+
+min_value2 = np.min(data2)
+max_value2 = np.max(data2)
+mean_value2 = np.median(data2)
+
+# Imprimir os resultados
+print("Valor mínimo para mfeat_fac_data:", min_value2)
+print("Valor máximo para mfeat_fac_data:", max_value2)
+print("Valor da mediana para mfeat_fac_data:", mean_value2)
+
+min_value3 = np.min(data3)
+max_value3 = np.max(data3)
+mean_value3 = np.median(data3)
+
+# Imprimir os resultados
+print("Valor mínimo para mfeat_zer_data:", min_value3)
+print("Valor máximo para mfeat_zer_data:", max_value3)
+print("Valor da mediana para mfeat_zer_data:", mean_value3)
+
+import numpy as np
+np.set_printoptions(threshold=np.inf)
+
+############################################ BASE DE DADOS: MFEAT-FOU ############################################
+
+import numpy as np
+from sklearn.metrics import confusion_matrix, adjusted_rand_score
+from scipy.special import comb
+
+# Função para calcular o valor do kernel gaussiano de dados com centros de cluster
+def gaussian_distance(data, centers, s):
+    gaussian_dist = np.exp(-0.5 * np.sum(((data[:, np.newaxis] - centers) ** 2) / s**2, axis=2))
+    return gaussian_dist
+
+# Função para calcular os graus de pertinência usando o método lagrangeano
+def update_membership_using_lagrangean(data, centers, s, m):
+    gaussian_dist = gaussian_distance(data, centers, s)
+    p = 2 - 2 * gaussian_dist
+    p = np.fmax(p, np.finfo(np.float64).eps)
+    p = (1/p) ** (1/(m-1))
+    u_new = p / np.sum(p, axis=1, keepdims=True)
+    u_new = np.fmax(u_new, np.finfo(np.float64).eps)
+    return u_new
+
+# Função para calcular os parâmetros de largura global usando o método lagrangeano
+def update_width_parameters(data, U, gaussian_dist, m, centers):
+    n_samples, n_features = data.shape
+    s = np.zeros(n_features)
+    um = U ** m
+
+    for j in range(n_features):
+        numerator = np.prod([
+            np.sum([
+                um[:, i] * gaussian_dist[:, i] * (data[:, h] - centers[i, h])**2
+                for i in range(len(centers))
+            ])
+            for h in range(n_features)
+        ])**(1/n_features)
+
+        denominator = np.sum([
+            um[:, i] * gaussian_dist[:, i] * (data[:, j] - centers[i, j])**2
+            for i in range(len(centers))
+        ])
+
+        s[j] = numerator / denominator
+
+    return s
+
+
+# Função para calcular o Modified Partition Coefficient (MPC)
+def calculate_mpc(U):
+    n_samples, n_clusters = U.shape
+    mpc = np.sum(U ** 2) / n_samples
+    return mpc
+
+# Função para calcular os centróides
+def calculate_centers(data, U, m, gaussian_dist, n_clusters):
+    centers = []
+    um = U ** m
+    for n in range(n_clusters):
+        p = um[:, n].reshape(-1, 1) * gaussian_dist[:, n].reshape(-1, 1)
+        q = p * data
+        center_i = np.sum(q, axis=0) / np.sum(p, axis=0)
+        centers.append(center_i)
+    centers = np.array(centers)
+    return centers
+
+# Função para calcular J_{KFCM-W.1}
+def compute_cost(U, m, gaussian_dist):
+    cost = np.sum((U ** m) * (2 - 2 * gaussian_dist))
+    return cost
+
+# Função principal para executar o algoritmo KFCM-K-W.1
+def gaussian_kernel_fuzzy_c_means_KW(data, n_clusters, m, max_iters, tol, random_state=None):
+    # Inicialização dos parâmetros e variáveis
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    n_samples, n_features = data.shape
+    U = np.random.rand(n_samples, n_clusters)
+    U /= np.sum(U, axis=1, keepdims=True)
+    centers = np.random.permutation(data)[:n_clusters]
+    s = np.ones(n_features)
+
+    for iteration in range(max_iters):
+        # Salva os valores de associação fuzzy antes de atualizar
+        U_old = U.copy()
+
+        # Passo 1: Computa a distância gaussiana
+        gaussian_dist = gaussian_distance(data, centers, s)
+
+        # Passo 2: Atualiza os parâmetros de largura global
+        s = update_width_parameters(data, U, gaussian_dist, m, centers)
+
+        # Passo 3: Atualiza os centróides
+        centers = update_cluster_prototypes(data, U, gaussian_dist, m)
+
+        # Passo 4: Atualiza os valores de associação fuzzy
+        U = update_membership_using_lagrangean(data, centers, s, m)
+
+        # Calcula a diferença e verifica a convergência
+        diff = np.linalg.norm(U - U_old)
+        if diff < tol:
+            break
+
+    cost = compute_cost(U, m, gaussian_dist)
+    return U, centers, s, cost
+
+
+# Função para calcular os protótipos dos clusters fuzzy usando o método lagrangeano
+def update_cluster_prototypes(data, U, gaussian_dist, m):
+    n_samples, n_features = data.shape
+    centers = []
+    um = U ** m  # Definindo "um"
+
+    for n in range(n_clusters):
+        p = um[:, n].reshape(-1, 1) * gaussian_dist[:, n].reshape(-1, 1)
+        q = p * data
+        center_i = np.sum(q, axis=0) / np.sum(p, axis=0)
+        centers.append(center_i)
+    centers = np.array(centers)
+    return centers
+
+
+# Função para calcular os vetores de parâmetros de largura de cada grupo
+def calculate_group_width_parameters(data, U, group_prototypes, m):
+    s = []
+    um = U ** m
+    for i, prototype in enumerate(group_prototypes):
+        dist = np.sum(um[:, i] * np.linalg.norm(data - prototype, axis=1))
+        s.append(dist / np.sum(um[:, i]))
+    return np.array(s)
+
+# Função para criar a partição crisp baseada nos valores de pertinência
+def create_crisp_partition1(U):
+    return np.argmax(U, axis=1)
+
+# Função para calcular o ARI
+def calculate_ari(labels_true, labels_pred):
+    return adjusted_rand_score(labels_true, labels_pred)
+
+# Definir parâmetros
+n_clusters = 10  # Número de clusters
+m = 1.6  # Parâmetro de fuzziness
+max_iters = 100  # Número máximo de iterações
+tol = 1e-6  # Tolerância para a convergência
+n_runs = 50  # Número de execuções
+
+# Executar o algoritmo para o dataset data1
+best_cost = float('inf')
+best_U, best_centers, best_s = None, None, None
+
+for run in range(n_runs):
+    U, centers, s, cost = gaussian_kernel_fuzzy_c_means_KW(data1, n_clusters, m, max_iters, tol, random_state=run)
+    if cost < best_cost:
+        best_cost = cost
+        best_U = U
+        best_centers = centers
+        best_s = s
+
+# Verificar se um resultado válido foi encontrado
+if best_U is None:
+    print("\nNão foi possível encontrar uma solução válida para o dataset data1.")
+else:
+    # Calcular os protótipos de cada grupo
+    U, centers, s, cost = gaussian_kernel_fuzzy_c_means_KW(data1, n_clusters, m, max_iters, tol, random_state=run)
+    gaussian_dist = gaussian_distance(data1, centers, s)  # Capturar a distância gaussiana
+    group_prototypes = update_cluster_prototypes(data1, best_U, gaussian_dist, m)  # Passar gaussian_dist aqui
+
+    # Calcular os vetores de parâmetros de largura de cada grupo
+    group_width_parameters = calculate_group_width_parameters(data1, best_U, group_prototypes, m)
+
+    # Criar a partição crisp
+    crisp_partition1 = create_crisp_partition1(best_U)
+
+    # Calcular o Modified Partition Coefficient (MPC)
+    mpc = calculate_mpc(best_U)
+
+    # Calcular o ARI entre duas execuções diferentes do algoritmo (não supervisionado)
+    # Executar uma segunda vez para obter outra partição dos clusters
+    U2, centers2, s2, cost2 = gaussian_kernel_fuzzy_c_means_KW(data1, n_clusters, m, max_iters, tol, random_state=n_runs)
+    class_cluster_list2 = create_crisp_partition1(U2)
+
+    # Calcular o ARI
+    ari = calculate_ari(crisp_partition1, class_cluster_list2)
+
+    # Calcular a matriz de confusão entre a partição crisp e a partição a priori
+    confusion_mat = confusion_matrix(crisp_partition1, class_cluster_list2)
+
+    # Exibir os resultados
+    print("\nResultados para o dataset mfeat-fou:")
+    print("Melhor valor da função objetivo:", best_cost)
+    print("Melhores centróides do cluster:")
+    print(best_centers)
+    print("Melhores parâmetros de largura global:")
+    print(best_s)
+    print("Modified Partition Coefficient (MPC):", mpc)
+    print("Índice de Rand corrigido (ARI):", ari)
+    print("Matriz de confusão entre a partição crisp e a primeira execução:")
+    print(confusion_mat)
+
+############################################ BASE DE DADOS: MFEAT-FAC ############################################
+
+import numpy as np
+from sklearn.metrics import confusion_matrix, adjusted_rand_score
+from scipy.special import comb
+
+# Função para calcular o valor do kernel gaussiano de dados com centros de cluster
+def gaussian_distance(data, centers, s):
+    gaussian_dist = np.exp(-0.5 * np.sum(((data[:, np.newaxis] - centers) ** 2) / (s**2+epsilon), axis=2))
+    return gaussian_dist
+
+# Função para calcular os graus de pertinência usando o método lagrangeano
+def update_membership_using_lagrangean(data, centers, s, m):
+    gaussian_dist = gaussian_distance(data, centers, s)
+    p = 2 - 2 * gaussian_dist
+    p = np.fmax(p, np.finfo(np.float64).eps)
+    p = (1/p) ** (1/(m-1))
+    u_new = p / np.sum(p, axis=1, keepdims=True)
+    u_new = np.fmax(u_new, np.finfo(np.float64).eps)
+    return u_new
+
+# Função para calcular os parâmetros de largura global usando o método lagrangeano
+def update_width_parameters(data, U, gaussian_dist, m, centers):
+    n_samples, n_features = data.shape
+    s = np.zeros(n_features)
+    um = U ** m
+    epsilon = 1e-6  # Definindo epsilon antes de usá-lo
+
+    for j in range(n_features):
+        numerator = np.sum([
+            np.sum([
+                um[:, i] * gaussian_dist[:, i] * np.sum((data[:, j] - centers[i][j])**2)
+                for i in range(len(centers))
+            ])
+        ])
+
+        denominator = np.sum([
+            np.sum([
+                um[:, i] * gaussian_dist[:, i]
+                for i in range(len(centers))
+            ])
+        ])
+
+        s[j] = numerator / (denominator + epsilon)  # Adiciona epsilon ao denominador
+
+    return s
+
+
+
+# Função para calcular os centróides
+def update_cluster_prototypes(data, U, gaussian_dist, m):
+    n_samples, n_features = data.shape
+    centers = []
+    um = U ** m
+
+    for n in range(len(um[0])):
+        um_sum = np.sum(um[:, n])
+        center_n = np.sum(data * um[:, n].reshape(-1, 1), axis=0) / um_sum
+        centers.append(center_n)
+
+    return np.array(centers)
+
+# Função para calcular J_{KFCM-W.1}
+def compute_cost(U, m, gaussian_dist):
+    cost = np.sum((U ** m) * (2 - 2 * gaussian_dist))
+    return cost
+
+# Função principal para executar o algoritmo KFCM-K-W.1
+def gaussian_kernel_fuzzy_c_means_KW(data, n_clusters, m, max_iters, tol, random_state=None):
+    # Inicialização dos parâmetros e variáveis
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    n_samples, n_features = data.shape
+    U = np.random.rand(n_samples, n_clusters)
+    U /= np.sum(U, axis=1, keepdims=True)
+    um = U ** m  # Definição correta de um
+    centers = np.random.permutation(data)[:n_clusters]
+    s = np.ones(n_features)
+
+    for iteration in range(max_iters):
+        # Salva os valores de associação fuzzy antes de atualizar
+        U_old = U.copy()
+
+        # Passo 1: Computa a distância gaussiana
+        gaussian_dist = gaussian_distance(data, centers, s)
+
+        # Passo 2: Atualiza os parâmetros de largura global
+        s = update_width_parameters(data, U, gaussian_dist, m, centers)
+
+        # Passo 3: Atualiza os centróides
+        centers = update_cluster_prototypes(data, U, gaussian_dist, m)
+
+        # Passo 4: Atualiza os valores de associação fuzzy
+        U = update_membership_using_lagrangean(data, centers, s, m)
+
+        # Calcula a diferença e verifica a convergência
+        diff = np.linalg.norm(U - U_old)
+        if diff < tol:
+            break
+
+    cost = compute_cost(U, m, gaussian_dist)
+    return U, centers, s, cost
+
+
+
+
+
+# Função para calcular o Modified Partition Coefficient (MPC)
+def calculate_mpc(U):
+    n_samples, n_clusters = U.shape
+    mpc = np.sum(U ** 2) / n_samples
+    return mpc
+
+# Função para calcular o ARI
+def calculate_ari(labels_true, labels_pred):
+    return adjusted_rand_score(labels_true, labels_pred)
+
+# Definir parâmetros
+n_clusters = 10  # Número de clusters
+m = 1.2  # Parâmetro de fuzziness
+max_iters = 100  # Número máximo de iterações
+tol = 1e-6  # Tolerância para a convergência
+n_runs = 50  # Número de execuções
+
+# Executar o algoritmo para o dataset data2
+best_cost = float('inf')
+best_U, best_centers, best_s = None, None, None
+
+for run in range(n_runs):
+    U, centers, s, cost = gaussian_kernel_fuzzy_c_means_KW(data2, n_clusters, m, max_iters, tol, random_state=run)
+    if cost < best_cost:
+        best_cost = cost
+        best_U = U
+        best_centers = centers
+        best_s = s
+
+# Verificar se um resultado válido foi encontrado
+if best_U is None:
+    print("\nNão foi possível encontrar uma solução válida para o dataset data2.")
+else:
+    # Calcular os protótipos de cada grupo
+    U, centers, s, cost = gaussian_kernel_fuzzy_c_means_KW(data2, n_clusters, m, max_iters, tol, random_state=run)
+    gaussian_dist = gaussian_distance(data2, centers, s)  # Capturar a distância gaussiana
+
+    # Criar a partição crisp
+    crisp_partition = np.argmax(best_U, axis=1)
+
+    # Calcular o Modified Partition Coefficient (MPC)
+    mpc = calculate_mpc(best_U)
+
+    # Calcular o ARI entre duas execuções diferentes do algoritmo (não supervisionado)
+    # Executar uma segunda vez para obter outra partição dos clusters
+    U2, _, _, _ = gaussian_kernel_fuzzy_c_means_KW(data2, n_clusters, m, max_iters, tol, random_state=n_runs)
+    class_cluster_list2 = np.argmax(U2, axis=1)
+
+    # Calcular o ARI
+    ari = calculate_ari(crisp_partition, class_cluster_list2)
+
+    # Calcular a matriz de confusão entre a partição crisp e a partição a priori
+    confusion_mat = confusion_matrix(crisp_partition, class_cluster_list2)
+
+    # Exibir os resultados
+    print("\nResultados para o dataset mfeat-fac:")
+    print("Melhor valor da função objetivo:", best_cost)
+    print("Melhores centróides do cluster:")
+    print(best_centers)
+    print("Melhores parâmetros de largura global:")
+    print(best_s)
+    print("Modified Partition Coefficient (MPC):", mpc)
+    print("Índice de Rand corrigido (ARI):", ari)
+    print("Matriz de confusão entre a partição crisp e a primeira execução:")
+    print(confusion_mat)
+
+############################################ BASE DE DADOS: MFEAT-ZER ############################################
+
+import numpy as np
+from sklearn.metrics import confusion_matrix, adjusted_rand_score
+from scipy.special import comb
+
+# Função para calcular o valor do kernel gaussiano de dados com centros de cluster
+def gaussian_distance(data, centers, s):
+    gaussian_dist = np.exp(-0.5 * np.sum(((data[:, np.newaxis] - centers) ** 2) / (s**2+epsilon), axis=2))
+    return gaussian_dist
+
+# Função para calcular os graus de pertinência usando o método lagrangeano
+def update_membership_using_lagrangean(data, centers, s, m):
+    gaussian_dist = gaussian_distance(data, centers, s)
+    p = 2 - 2 * gaussian_dist
+    p = np.fmax(p, np.finfo(np.float64).eps)
+    p = (1/p) ** (1/(m-1))
+    u_new = p / np.sum(p, axis=1, keepdims=True)
+    u_new = np.fmax(u_new, np.finfo(np.float64).eps)
+    return u_new
+
+# Função para calcular os parâmetros de largura global usando o método lagrangeano
+def update_width_parameters(data, U, gaussian_dist, m, centers):
+    n_samples, n_features = data.shape
+    s = np.zeros(n_features)
+    um = U ** m
+    epsilon = 1e-6  # Definindo epsilon antes de usá-lo
+
+    for j in range(n_features):
+        numerator = np.sum([
+            np.sum([
+                um[:, i] * gaussian_dist[:, i] * np.sum((data[:, j] - centers[i][j])**2)
+                for i in range(len(centers))
+            ])
+        ])
+
+        denominator = np.sum([
+            np.sum([
+                um[:, i] * gaussian_dist[:, i]
+                for i in range(len(centers))
+            ])
+        ])
+
+        s[j] = numerator / (denominator + epsilon)  # Adiciona epsilon ao denominador
+
+    return s
+
+
+
+# Função para calcular os centróides
+def update_cluster_prototypes(data, U, gaussian_dist, m):
+    n_samples, n_features = data.shape
+    centers = []
+    um = U ** m
+
+    for n in range(len(um[0])):
+        um_sum = np.sum(um[:, n])
+        center_n = np.sum(data * um[:, n].reshape(-1, 1), axis=0) / um_sum
+        centers.append(center_n)
+
+    return np.array(centers)
+
+# Função para calcular J_{KFCM-W.1}
+def compute_cost(U, m, gaussian_dist):
+    cost = np.sum((U ** m) * (2 - 2 * gaussian_dist))
+    return cost
+
+# Função principal para executar o algoritmo KFCM-K-W.1
+def gaussian_kernel_fuzzy_c_means_KW(data, n_clusters, m, max_iters, tol, random_state=None):
+    # Inicialização dos parâmetros e variáveis
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    n_samples, n_features = data.shape
+    U = np.random.rand(n_samples, n_clusters)
+    U /= np.sum(U, axis=1, keepdims=True)
+    um = U ** m  # Definição correta de um
+    centers = np.random.permutation(data)[:n_clusters]
+    s = np.ones(n_features)
+
+    for iteration in range(max_iters):
+        # Salva os valores de associação fuzzy antes de atualizar
+        U_old = U.copy()
+
+        # Passo 1: Computa a distância gaussiana
+        gaussian_dist = gaussian_distance(data, centers, s)
+
+        # Passo 2: Atualiza os parâmetros de largura global
+        s = update_width_parameters(data, U, gaussian_dist, m, centers)
+
+        # Passo 3: Atualiza os centróides
+        centers = update_cluster_prototypes(data, U, gaussian_dist, m)
+
+        # Passo 4: Atualiza os valores de associação fuzzy
+        U = update_membership_using_lagrangean(data, centers, s, m)
+
+        # Calcula a diferença e verifica a convergência
+        diff = np.linalg.norm(U - U_old)
+        if diff < tol:
+            break
+
+    cost = compute_cost(U, m, gaussian_dist)
+    return U, centers, s, cost
+
+
+
+
+
+# Função para calcular o Modified Partition Coefficient (MPC)
+def calculate_mpc(U):
+    n_samples, n_clusters = U.shape
+    mpc = np.sum(U ** 2) / n_samples
+    return mpc
+
+# Função para calcular o ARI
+def calculate_ari(labels_true, labels_pred):
+    return adjusted_rand_score(labels_true, labels_pred)
+
+# Definir parâmetros
+n_clusters = 10  # Número de clusters
+m = 1.6  # Parâmetro de fuzziness
+max_iters = 100  # Número máximo de iterações
+tol = 1e-6  # Tolerância para a convergência
+n_runs = 50  # Número de execuções
+
+# Executar o algoritmo para o dataset data2
+best_cost = float('inf')
+best_U, best_centers, best_s = None, None, None
+
+for run in range(n_runs):
+    U, centers, s, cost = gaussian_kernel_fuzzy_c_means_KW(data3, n_clusters, m, max_iters, tol, random_state=run)
+    if cost < best_cost:
+        best_cost = cost
+        best_U = U
+        best_centers = centers
+        best_s = s
+
+# Verificar se um resultado válido foi encontrado
+if best_U is None:
+    print("\nNão foi possível encontrar uma solução válida para o dataset data2.")
+else:
+    # Calcular os protótipos de cada grupo
+    U, centers, s, cost = gaussian_kernel_fuzzy_c_means_KW(data3, n_clusters, m, max_iters, tol, random_state=run)
+    gaussian_dist = gaussian_distance(data3, centers, s)  # Capturar a distância gaussiana
+
+    # Criar a partição crisp
+    crisp_partition = np.argmax(best_U, axis=1)
+
+    # Calcular o Modified Partition Coefficient (MPC)
+    mpc = calculate_mpc(best_U)
+
+    # Calcular o ARI entre duas execuções diferentes do algoritmo (não supervisionado)
+    # Executar uma segunda vez para obter outra partição dos clusters
+    U2, _, _, _ = gaussian_kernel_fuzzy_c_means_KW(data3, n_clusters, m, max_iters, tol, random_state=n_runs)
+    class_cluster_list2 = np.argmax(U2, axis=1)
+
+    # Calcular o ARI
+    ari = calculate_ari(crisp_partition, class_cluster_list2)
+
+    # Calcular a matriz de confusão entre a partição crisp e a partição a priori
+    confusion_mat = confusion_matrix(crisp_partition, class_cluster_list2)
+
+    # Exibir os resultados
+    print("\nResultados para o dataset mfeat-zer:")
+    print("Melhor valor da função objetivo:", best_cost)
+    print("Melhores centróides do cluster:")
+    print(best_centers)
+    print("Melhores parâmetros de largura global:")
+    print(best_s)
+    print("Modified Partition Coefficient (MPC):", mpc)
+    print("Índice de Rand corrigido (ARI):", ari)
+    print("Matriz de confusão entre a partição crisp e a primeira execução:")
+    print(confusion_mat)

@@ -1,0 +1,148 @@
+import numpy as np
+from sklearn.model_selection import RepeatedStratifiedKFold, StratifiedKFold, GridSearchCV
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, make_scorer
+from sklearn.neighbors import KernelDensity, KNeighborsClassifier
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+import numpy as np
+import warnings
+
+# Função para carregar os dados de um arquivo de texto
+def load_data(filename):
+    with open(filename, 'r') as file:
+        data = np.loadtxt(file)
+    return data
+
+# Carregar os datasets mfeat-fou, mfeat-fac e mfeat-zer
+mfeat_fou_data = load_data('mfeat-fou')
+mfeat_fac_data = load_data('mfeat-fac')
+mfeat_zer_data = load_data('mfeat-zer')
+
+#print(mfeat_fou_data)
+#print(mfeat_fac_data)
+#print(mfeat_zer_data)
+
+# Verificar as dimensões dos datasets carregados
+print("Dimensões do dataset mfeat-fou:", mfeat_fou_data.shape)
+print("Dimensões do dataset mfeat-fac:", mfeat_fac_data.shape)
+print("Dimensões do dataset mfeat-zer:", mfeat_zer_data.shape)
+
+# Selecionar as primeiras 100 linhas de cada conjunto de dados
+data1 = mfeat_fou_data
+data2 = mfeat_fac_data
+data3 = mfeat_zer_data
+
+# Supondo que 'matriz' seja a sua matriz NumPy
+np.set_printoptions(threshold=np.inf)
+
+warnings.filterwarnings('ignore')
+
+class ParzenWindowClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(self, bandwidth=1.0):
+        self.bandwidth = bandwidth
+        self.kde_models = []
+
+    def fit(self, X, y=None):
+        self.classes_ = np.unique(y)
+        self.kde_models = []
+        for c in self.classes_:
+            kde = KernelDensity(kernel='gaussian', bandwidth=self.bandwidth)
+            kde.fit(X[y == c])
+            self.kde_models.append(kde)
+        return self
+
+    def predict_proba(self, X):
+        log_probs = np.array([kde.score_samples(X) for kde in self.kde_models]).T
+        probs = np.exp(log_probs)
+        return probs / probs.sum(axis=1, keepdims=True)
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+def majority_vote_classifier(y_pred1, y_pred2, y_pred3):
+    y_pred_stack = np.vstack((y_pred1, y_pred2, y_pred3)).T
+    y_pred_final = np.apply_along_axis(lambda x: np.bincount(x).argmax(), axis=1, arr=y_pred_stack)
+    return y_pred_final
+
+def calculate_metrics(y_true, y_pred):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, average='weighted')
+    recall = recall_score(y_true, y_pred, average='weighted')
+    f1 = f1_score(y_true, y_pred, average='weighted')
+    return accuracy, precision, recall, f1
+
+def evaluate_majority_vote_with_cv(classifier, data1, data2, data3, n_clusters=10, n_splits=10, n_repeats=30):
+    if data1 is None or data2 is None or data3 is None:
+        raise ValueError("One of the input datasets is None.")
+    if data1.shape[0] != data2.shape[0] or data1.shape[0] != data3.shape[0]:
+        raise ValueError("All input datasets must have the same number of samples.")
+
+    cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
+    results = {'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
+
+    pseudo_labels1 = create_pseudo_labels(data1, n_clusters)
+    pseudo_labels2 = create_pseudo_labels(data2, n_clusters)
+    pseudo_labels3 = create_pseudo_labels(data3, n_clusters)
+
+    for train_index, test_index in cv.split(data1, pseudo_labels1):
+        data1_train, data1_test = data1[train_index], data1[test_index]
+        data2_train, data2_test = data2[train_index], data2[test_index]
+        data3_train, data3_test = data3[train_index], data3[test_index]
+        pseudo_labels1_train, pseudo_labels1_test = pseudo_labels1[train_index], pseudo_labels1[test_index]
+        pseudo_labels2_train, pseudo_labels2_test = pseudo_labels2[train_index], pseudo_labels2[test_index]
+        pseudo_labels3_train, pseudo_labels3_test = pseudo_labels3[train_index], pseudo_labels3[test_index]
+
+        if classifier == 'GaussianNB':
+            clf1, clf2, clf3 = GaussianNB(), GaussianNB(), GaussianNB()
+        elif classifier == 'KNN':
+            clf1, clf2, clf3 = KNeighborsClassifier(metric='euclidean'), KNeighborsClassifier(metric='euclidean'), KNeighborsClassifier(metric='euclidean')
+        elif classifier == 'Parzen':
+            clf1, clf2, clf3 = ParzenWindowClassifier(), ParzenWindowClassifier(), ParzenWindowClassifier()
+        elif classifier == 'LogisticRegression':
+            clf1, clf2, clf3 = LogisticRegression(max_iter=1000, multi_class='ovr'), LogisticRegression(max_iter=1000, multi_class='ovr'), LogisticRegression(max_iter=1000, multi_class='ovr')
+
+        # Ajuste de hiperparâmetros usando validação cruzada interna (5-fold)
+        if classifier in ['Parzen', 'KNN']:
+            param_grid = {'bandwidth': np.linspace(0.1, 2.0, 10)} if classifier == 'Parzen' else {'n_neighbors': range(1, 11)}
+            inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            gs_clf1 = GridSearchCV(clf1, param_grid, cv=inner_cv).fit(data1_train, pseudo_labels1_train)
+            gs_clf2 = GridSearchCV(clf2, param_grid, cv=inner_cv).fit(data2_train, pseudo_labels2_train)
+            gs_clf3 = GridSearchCV(clf3, param_grid, cv=inner_cv).fit(data3_train, pseudo_labels3_train)
+            clf1, clf2, clf3 = gs_clf1.best_estimator_, gs_clf2.best_estimator_, gs_clf3.best_estimator_
+
+        clf1.fit(data1_train, pseudo_labels1_train)
+        clf2.fit(data2_train, pseudo_labels2_train)
+        clf3.fit(data3_train, pseudo_labels3_train)
+
+        y_pred1 = clf1.predict(data1_test)
+        y_pred2 = clf2.predict(data2_test)
+        y_pred3 = clf3.predict(data3_test)
+        y_pred_final = majority_vote_classifier(y_pred1, y_pred2, y_pred3)
+
+        # Aqui estamos calculando métricas usando pseudo_labels_test combinados como y_true
+        y_true_final = np.concatenate((pseudo_labels1_test, pseudo_labels2_test, pseudo_labels3_test))
+        y_pred_combined = np.concatenate((y_pred1, y_pred2, y_pred3))
+        accuracy, precision, recall, f1 = calculate_metrics(y_true_final, y_pred_combined)
+        results['accuracy'].append(accuracy)
+        results['precision'].append(precision)
+        results['recall'].append(recall)
+        results['f1'].append(f1)
+
+    summary = {}
+    for metric in results:
+        metric_mean = np.mean(results[metric])
+        metric_std = np.std(results[metric])
+        confidence_interval = 1.96 * metric_std / np.sqrt(len(results[metric]))
+        summary[metric] = (metric_mean, metric_mean - confidence_interval, metric_mean + confidence_interval)
+
+    return summary
+
+# Avaliar o voto majoritário com validação cruzada repetida
+classifiers = ['GaussianNB', 'KNN', 'Parzen', 'LogisticRegression']
+data1, data2, data3 = data1, data2, data3
+for classifier in classifiers:
+    print(f"Evaluating majority vote classifier with 30x10 repeated stratified cross-validation for {classifier}...")
+    results_majority_vote = evaluate_majority_vote_with_cv(classifier, data1, data2, data3)
+    print("Results:", results_majority_vote)
+    print()
